@@ -1,13 +1,17 @@
+use std::os::unix::fs::lchown;
 // 引入依赖库
 use inquire::{
     validator::Validation,
     Text,
+    MultiSelect,
+    list_option::ListOption
 };
 use fancy_regex::Regex;
 use reqwest::{blocking as req, redirect::Policy, header};
 use serde::Deserialize;
 use serde_json;
 use colored::*;
+use std::fmt;
 
 // 常量部分，主要用于正则表达式匹配和B站API
 const REG_BVID: &str = r"BV\w{10}";
@@ -60,6 +64,12 @@ struct PageInfo {
     cid: u32,
     p: u32,
     title: String,
+}
+
+impl fmt::Display for PageInfo {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "P{}: {}", self.p, self.title)
+    }
 }
 
 struct VideoInfo {
@@ -157,7 +167,25 @@ fn main() {
         }
     }
 
-    println!("1")
+    // 展示视频标题、up主基本信息
+    println!("{}，UP主 {}", video_info.title, video_info.uploader);
+
+    // 判断视频是否有分p，如有，要求用户选择需要下载的分p，支持多选，之后将修改覆盖到video_info里
+    if video_info.pages.len() == 1 {
+        println!("该视频无分P，直接下载 {}", video_info.pages[0].title);
+    } else if video_info.pages.len() >=2 {
+        let validator = |input: &[ListOption<&PageInfo>]| {
+            if input.len() == 0 {
+                Ok(Validation::Invalid("至少得选一个视频才能下载啊".into()))
+            } else {
+                Ok(Validation::Valid)
+            }
+        };
+        let res = MultiSelect::new("选择想下载的分集", video_info.pages)
+            .with_validator(validator)
+            .prompt().unwrap();
+        video_info.pages = res;
+    }
 }
 
 // 将用户输入的视频url、短链接、av/bv号等统一处理成av/bv号，方便后续请求
