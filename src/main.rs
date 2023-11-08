@@ -4,12 +4,9 @@ use inquire::{
     Text,
 };
 use fancy_regex::Regex;
-use reqwest::{
-    blocking as req,
-    redirect::Policy,
-    header,
-};
+use reqwest::{blocking as req, redirect::Policy, header};
 use serde::Deserialize;
+use serde_json;
 use colored::*;
 
 // 常量部分，主要用于正则表达式匹配和B站API
@@ -72,6 +69,18 @@ struct VideoInfo {
     pages: Vec<PageInfo>,
 }
 
+enum UserState {
+    Vip(String),
+    User(String),
+    None,
+}
+
+struct UserInfo {
+    state: UserState,
+    img_url: String,
+    sub_url: String,
+}
+
 // 主函数，主要处理用户输入和程序整体流程
 fn main() {
     // inquire预验证规则，只按照正则表达式进行匹配判断
@@ -116,11 +125,18 @@ fn main() {
 
     let cookie = Text::new("请输入Cookie SESSDATA =").prompt().unwrap();
     let mut headers = header::HeaderMap::new();
-    headers.insert(header::REFERER, header::HeaderValue::from_static(HTTP_REFERER));
     headers.insert(header::COOKIE, header::HeaderValue::from_str(&*format!("SESSDATA={}", &cookie)).unwrap());
     let client = req::Client::builder()
         .default_headers(headers)
         .build().unwrap();
+
+    // 验证Cookie有效性及获取用户信息
+    let user_info = get_user_info(&client).unwrap();
+    match user_info.state {
+        UserState::None => println!("{}", "Cookie无效，未登录状态".yellow()),
+        UserState::User(t) => println!("{}", format!("普通用户：{}，你好~", t).green()),
+        UserState::Vip(t) => println!("{}", format!("大会员用户：{}，你好~", t).truecolor(251, 114, 153))
+    }
 
     // 询问+处理逻辑，当处理出错时（短链接404、长链接格式有误等正则查不出来等错误）循环提示用户重新输入
     while input_invalid {
@@ -195,6 +211,71 @@ fn parse_short_url(short_url: &str) -> Option<String> {
     }
 }
 
+// 校验Cookie是否有效
+fn get_user_info(client: &req::Client) -> Result<UserInfo, String> {
+    #[derive(Deserialize)]
+    struct WbiImg {
+        img_url: String,
+        sub_url: String,
+    }
+    #[derive(Deserialize)]
+    struct RawData {
+        isLogin: bool,
+        wbi_img: WbiImg,
+    }
+    #[derive(Deserialize)]
+    struct RawResponse {
+        code: i32,
+        data: RawData,
+    }
+    let res = client.get(API_USER_INFO).send();
+    let res = match res {
+        Ok(t) => t,
+        Err(_) => return Err("网络错误".into())
+    };
+    let res = match res.text() {
+        Ok(t) => t,
+        Err(_) => return Err("响应异常".into())
+    };
+    let pre_res: RawResponse = match serde_json::from_str(&res) {
+        Ok(t) => t,
+        Err(_) => return Err("响应异常".into())
+    };
+    if pre_res.code == -101 && !pre_res.data.isLogin {
+        return Ok(UserInfo {
+            state: UserState::None,
+            img_url: pre_res.data.wbi_img.img_url,
+            sub_url: pre_res.data.wbi_img.sub_url,
+        });
+    } else if pre_res.code != 0 || !pre_res.data.isLogin { return Err("无法理解的响应".into()); };
+    #[derive(Deserialize)]
+    struct PostRawData {
+        uname: String,
+        vipStatus: u8,
+    }
+    #[derive(Deserialize)]
+    struct PostRawResponse {
+        data: PostRawData,
+    }
+    let post_res: PostRawResponse = match serde_json::from_str(&res) {
+        Ok(t) => t,
+        Err(_) => return Err("响应异常".into())
+    };
+    if post_res.data.vipStatus == 0 {
+        Ok(UserInfo {
+            state: UserState::User(post_res.data.uname),
+            img_url: pre_res.data.wbi_img.img_url,
+            sub_url: pre_res.data.wbi_img.sub_url,
+        })
+    } else if post_res.data.vipStatus == 1 {
+        Ok(UserInfo {
+            state: UserState::Vip(post_res.data.uname),
+            img_url: pre_res.data.wbi_img.img_url,
+            sub_url: pre_res.data.wbi_img.sub_url,
+        })
+    } else { Err("用户已登录，但存在无法理解的响应".into()) }
+}
+
 // 获取视频信息，也用于预检视频是否有效
 fn get_video_info(video_id: &VideoId, client: &req::Client) -> Result<VideoInfo, String> {
     #[derive(Deserialize)]
@@ -216,7 +297,7 @@ fn get_video_info(video_id: &VideoId, client: &req::Client) -> Result<VideoInfo,
     }
     #[derive(Deserialize)]
     struct RawResponse {
-        code: u32,
+        code: i32,
         data: RawInfo,
     }
     let res = client.get(API_VIDEO_INFO)
