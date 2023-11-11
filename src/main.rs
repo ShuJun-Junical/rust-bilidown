@@ -226,7 +226,7 @@ fn main() {
         }
     }
 
-    println!()
+    println!("{:?}",url_list)
 }
 
 // 将用户输入的视频url、短链接、av/bv号等统一处理成av/bv号，方便后续请求
@@ -482,9 +482,9 @@ fn get_stream_url(bvid: &str, cid: &u32, choose_quality_manually: bool,
         code: i32,
         data: RawData,
     }
-    let mut post_res: RawResponse = match serde_json::from_str(&res) {
+    let post_res: RawResponse = match serde_json::from_str(&res) {
         Ok(t) => t,
-        Err(a) => return Err("响应异常".into())
+        Err(_) => return Err("响应异常".into())
     };
     let mut quality_id = post_res.data.accept_quality[0];
     if choose_quality_manually {
