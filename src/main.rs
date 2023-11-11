@@ -11,6 +11,7 @@ use inquire::{
     Text,
     MultiSelect,
     Select,
+    Confirm,
     list_option::ListOption,
 };
 use fancy_regex::Regex;
@@ -201,12 +202,29 @@ fn main() {
             }
         };
         let res = MultiSelect::new("选择想下载的分集", video_info.pages)
+            .with_help_message("使用方向键（↑、↓）来移动光标，按空格（Space）键来选中或取消该项，按回车（Enter）提交选择")
             .with_validator(validator)
             .prompt().unwrap();
         video_info.pages = res;
     }
 
-    let a = get_stream_url(&video_info.bvid, &video_info.pages[0].cid, true, &user_info, &client).unwrap();
+    // 询问是否要手动选择下载的分辨率
+    let choose_quality_manually = Confirm::new("是否要手动选择视频分辨率")
+        .with_default(false)
+        .with_error_message("无效答案，输入“y”表示“是”或“n”表示“否”")
+        .with_help_message("默认会下载能够下载的最高质量视频（取决于该视频提供的最高规格和是否拥有大会员）")
+        .prompt().unwrap();
+
+    let mut url_list = Vec::new();
+
+    // 遍历用户选好的分P列表，获取视频流Url并存入url_list
+    for i in video_info.pages.iter() {
+        println!("正在处理P{}: {}", i.p, i.title);
+        match get_stream_url(&video_info.bvid, &i.cid, choose_quality_manually, &user_info, &client) {
+            Ok(t) => url_list.push(t),
+            Err(e) => println!("{}{}", "该分P处理失败，".red(), e.red())
+        }
+    }
 
     println!()
 }
