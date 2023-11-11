@@ -10,12 +10,13 @@ use inquire::{
     validator::Validation,
     Text,
     MultiSelect,
+    Select,
     list_option::ListOption,
 };
 use fancy_regex::Regex;
 use reqwest::{blocking as req, redirect::Policy, header};
 use serde::Deserialize;
-use serde_json;
+use serde_json as json;
 use colored::*;
 use std::fmt;
 use std::ops::Add;
@@ -33,12 +34,12 @@ const REG_WBI_KEY: &str = r"(?<=i0.hdslb.com/bfs/wbi/)(\w+)(?=\.png)";
 const API_VIDEO_INFO: &str = "https://api.bilibili.com/x/web-interface/view";
 const API_STREAM_URL: &str = "https://api.bilibili.com/x/player/wbi/playurl";
 const API_USER_INFO: &str = "https://api.bilibili.com/x/web-interface/nav";
-const HTTP_REFERER: &str = "www.bilibili.com";
+const HTTP_REFERER: &str = "https://www.bilibili.com";
+const HTTP_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15";
 const WBI_KEY_TAB: [u8; 64] = [
-    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
-    33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
-    61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
-    36, 20, 34, 44, 52
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9,
+    42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0,
+    1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52
 ];
 
 enum VideoIdValue {
@@ -154,6 +155,7 @@ fn main() {
     let mut headers = header::HeaderMap::new();
     headers.insert(header::COOKIE, header::HeaderValue::from_str(&*format!("SESSDATA={}", &cookie)).unwrap());
     let client = req::Client::builder()
+        .user_agent(HTTP_USER_AGENT)
         .default_headers(headers)
         .build().unwrap();
 
@@ -161,8 +163,8 @@ fn main() {
     let user_info = get_user_info(&client).unwrap();
     match user_info.state {
         UserState::None => println!("{}", "Cookie无效，未登录状态".yellow()),
-        UserState::User(t) => println!("{}", format!("普通用户：{}，你好~", t).green()),
-        UserState::Vip(t) => println!("{}", format!("大会员用户：{}，你好~", t).truecolor(251, 114, 153))
+        UserState::User(ref t) => println!("{}", format!("普通用户：{}，你好~", t).green()),
+        UserState::Vip(ref t) => println!("{}", format!("大会员用户：{}，你好~", t).truecolor(251, 114, 153))
     }
 
     // 询问+处理逻辑，当处理出错时（短链接404、长链接格式有误等正则查不出来等错误）循环提示用户重新输入
@@ -204,12 +206,8 @@ fn main() {
         video_info.pages = res;
     }
 
-    let a = Vec::from([
-        ("foo".to_string(), "114".to_string()),
-        ("bar".to_string(), "514".to_string()),
-        ("zab".to_string(), "1919810".to_string())
-    ]);
-    let a = wbi_sign_para(a, &user_info.img_url, &user_info.sub_url).expect("炸了");
+    let a = get_stream_url(&video_info.bvid, &video_info.pages[0].cid, true, &user_info, &client).unwrap();
+
     println!()
 }
 
@@ -414,4 +412,106 @@ fn wbi_sign_para(mut paras: Vec<(String, String)>, img_url: &str, sub_url: &str)
     let wbi_sign = format!("{:x}", md5::compute(query.add(&mixin_key)));
     paras.push(("w_rid".into(), wbi_sign));
     Ok(paras)
+}
+
+// 获取视频流下载链接
+fn get_stream_url(bvid: &str, cid: &u32, choose_quality_manually: bool,
+                  user_info: &UserInfo, client: &req::Client) -> Result<(String, String), String> {
+    let mut quality_flag = match user_info.state {
+        UserState::None => vec![("qn".to_string(), "64".to_string()), ("fnval".to_string(), "16".to_string())],
+        UserState::User(_) => vec![("qn".to_string(), "80".to_string()), ("fnval".to_string(), "16".to_string())],
+        UserState::Vip(_) => vec![("qn".to_string(), "127".to_string()), ("fnval".to_string(), "4048".to_string()),
+                                  ("fourk".to_string(), "1".to_string()),
+        ]
+    };
+    let mut paras = vec![("bvid".to_string(), bvid.to_string()),
+                         ("cid".to_string(), cid.to_string())];
+    paras.append(&mut quality_flag);
+    let paras = wbi_sign_para(paras, &user_info.img_url, &user_info.sub_url)?;
+    let res = match client.get(API_STREAM_URL).query(&paras).send() {
+        Ok(t) => t,
+        Err(_) => return Err("网络错误".into())
+    };
+    let res = res.text().unwrap();
+    #[derive(Deserialize)]
+    struct RawVideo {
+        id: i32,
+        base_url: String,
+        backup_url: Vec<String>,
+        codecid: i32,
+    }
+    #[derive(Deserialize)]
+    struct RawAudio {
+        id: i32,
+        base_url: String,
+        backup_url: Vec<String>,
+    }
+    #[derive(Deserialize)]
+    struct RawDash {
+        video: Vec<RawVideo>,
+        audio: Vec<RawAudio>,
+        dolby: serde_json::Value,
+        flac: serde_json::Value,
+    }
+    #[derive(Deserialize)]
+    struct RawData {
+        accept_description: Vec<String>,
+        accept_quality: Vec<i32>,
+        dash: RawDash,
+    }
+    #[derive(Deserialize)]
+    struct RawResponse {
+        code: i32,
+        data: RawData,
+    }
+    let mut post_res: RawResponse = match serde_json::from_str(&res) {
+        Ok(t) => t,
+        Err(a) => return Err("响应异常".into())
+    };
+    let mut quality_id = post_res.data.accept_quality[0];
+    if choose_quality_manually {
+        struct Quality(i32, String);
+        impl fmt::Display for Quality {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, "{}", self.1) }
+        }
+        let mut qualities: Vec<Quality> = Vec::new();
+        for (i, v) in post_res.data.accept_quality.iter().enumerate() {
+            qualities.push(Quality(v.clone(), post_res.data.accept_description[i].to_string()))
+        }
+        let res = Select::new("选择该分P要下载的清晰度", qualities).prompt().unwrap();
+        quality_id = res.0
+    }
+    let mut best_audio = post_res.data.dash.audio.iter().max_by_key(|i| i.id).unwrap().base_url.to_string();
+    if let json::Value::Object(t) = post_res.data.dash.flac {
+        if let Some(t) = t.get("audio") {
+            if let json::Value::Object(t) = t {
+                if let Some(t) = t.get("base_url") {
+                    if let json::Value::String(t) = t {
+                        if !choose_quality_manually {
+                            best_audio = t.to_string();
+                        }
+                    }
+                }
+            }
+        }
+    };
+    if let json::Value::Object(t) = post_res.data.dash.dolby {
+        if let Some(t) = t.get("audio") {
+            if let json::Value::Array(t) = t {
+                if let Some(t) = t.get(0) {
+                    if let json::Value::Object(t) = t {
+                        if let Some(t) = t.get("base_url") {
+                            if let json::Value::String(t) = t {
+                                if !choose_quality_manually {
+                                    best_audio = t.to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    let video_url: Vec<_> = post_res.data.dash.video.iter().filter(|x| x.id == quality_id).collect();
+    Ok((video_url[0].base_url.to_string(), best_audio))
 }
