@@ -5,25 +5,26 @@
  感谢做B站API逆向的易姐以及上述仓库的所有贡献者！
 */
 
-// 引入依赖库
-use inquire::{
-    validator::Validation,
-    Text,
-    MultiSelect,
-    Select,
-    Confirm,
-    list_option::ListOption,
-};
-use fancy_regex::Regex;
-use reqwest::{blocking as req, redirect::Policy, header};
-use serde::Deserialize;
-use serde_json as json;
-use colored::*;
-use std::fmt;
+use std::{fmt, fs};
 use std::ops::Add;
 use std::time::SystemTime;
-use urlencoding::encode as url_encode;
-use md5;
+use std::io::copy;
+use std::fs::File;
+
+use colored::*;
+use fancy_regex::Regex;
+use inquire::{
+    Confirm,
+    list_option::ListOption,
+    MultiSelect,
+    Select,
+    Text,
+    validator::Validation,
+};
+use reqwest::{blocking as req, header, redirect::Policy};
+use reqwest::blocking::Client;
+use serde::Deserialize;
+use serde_json as json;
 
 // 常量部分，主要用于正则表达式匹配和B站API
 const REG_BVID: &str = r"BV\w{10}";
@@ -226,7 +227,7 @@ fn main() {
         }
     }
 
-    println!("{:?}",url_list)
+    println!("{:?}", url_list)
 }
 
 // 将用户输入的视频url、短链接、av/bv号等统一处理成av/bv号，方便后续请求
@@ -422,8 +423,8 @@ fn wbi_sign_para(mut paras: Vec<(String, String)>, img_url: &str, sub_url: &str)
     let reg_filter = Regex::new(r"[!'()*]").unwrap();
     for i in paras.iter() {
         let val = reg_filter.replace(&i.1, "").to_string();
-        let key = url_encode(&i.0).to_string().to_lowercase();
-        let val = url_encode(&val).to_string().to_lowercase();
+        let key = urlencoding::encode(&i.0).to_string().to_lowercase();
+        let val = urlencoding::encode(&val).to_string().to_lowercase();
         query.push(format!("{}={}", key, val));
     };
     let query = query.join("&");
@@ -532,4 +533,42 @@ fn get_stream_url(bvid: &str, cid: &u32, choose_quality_manually: bool,
     };
     let video_url: Vec<_> = post_res.data.dash.video.iter().filter(|x| x.id == quality_id).collect();
     Ok((video_url[0].base_url.to_string(), best_audio))
+}
+
+fn download_video(urls: &(String, String), save_path: &str, client: &mut Client) -> Result<(), String> {
+    extern crate ffmpeg_next as ffmpeg;
+    let mut temp_dir = std::env::temp_dir();
+    temp_dir.push("rust_bilidown");
+    if let Err(_) = fs::create_dir_all(temp_dir.clone()) {
+        return Err("创建目录失败".to_string());
+    }
+    let mut dests = [String::new(), String::new()];
+    for (i, v) in [&urls.0, &urls.1].iter().enumerate() {
+        let res = client.get(v.to_string()).header(header::REFERER, HTTP_REFERER).send();
+        let res = match res {
+            Ok(t) => t,
+            Err(_) => return Err("网络请求错误".to_string())
+        };
+        let fname = res.url()
+            .path_segments()
+            .and_then(|segments| segments.last())
+            .and_then(|name| if name.is_empty() { None } else { Some(name) })
+            .unwrap_or("tmp0.m4v");
+        println!("file to download: '{}'", fname);
+        let fname = temp_dir.join(fname);
+        println!("will be located under: '{:?}'", fname);
+        let mut dest = match File::create(fname.clone()) {
+            Ok(t) => t,
+            Err(_) => return Err("无法创建文件".to_string())
+        };
+        let content = res.text();
+        if let Err(_) = copy(&mut content.unwrap().as_bytes(), &mut dest) {
+            return Err("无法保存文件".to_string());
+        }
+        dests[i] = fname.to_string_lossy().parse().unwrap()
+    }
+    if let Err(_) = ffmpeg::init() {
+        return Err("ffmpeg异常".to_string());
+    }
+    Ok(())
 }
