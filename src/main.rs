@@ -2,7 +2,6 @@
  rust-bilidown
  个人第一个入门Rust的练手项目，一个B站下载器，基于CLI，支持下载大会员专属格式、支持分P视频、支持选择清晰度
  参考：https://github.com/SocialSisterYi/bilibili-API-collect
- 感谢做B站API逆向的易姐以及上述仓库的所有贡献者！
 */
 
 use std::{fmt, fs};
